@@ -1,0 +1,29 @@
+# Build Stage
+FROM rust:1.80-slim-bookworm as builder
+
+# Gerekli kütüphaneler (OpenSSL vb.)
+RUN apt-get update && \
+    apt-get install -y pkg-config libssl-dev file make gcc g++ cmake && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Klasördeki modified kaynak kodu kopyala
+COPY . .
+
+# Binaries (hbbs, hbbr) oluştur
+RUN cargo build --release
+
+# Runtime Stage
+FROM debian:bookworm-slim
+
+# TLS/SSL ve Cert dosyaları için
+RUN apt-get update && \
+    apt-get install -y ca-certificates openssl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Build aşamasından dosyaları son imaja aktar
+COPY --from=builder /app/target/release/hbbs /usr/bin/hbbs
+COPY --from=builder /app/target/release/hbbr /usr/bin/hbbr
+
+WORKDIR /root
