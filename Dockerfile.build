@@ -19,7 +19,7 @@ FROM debian:bookworm-slim
 
 # TLS/SSL ve Cert dosyaları için
 RUN apt-get update && \
-    apt-get install -y ca-certificates openssl && \
+    apt-get install -y ca-certificates openssl netcat-openbsd && \
     rm -rf /var/lib/apt/lists/*
 
 # Build aşamasından dosyaları son imaja aktar
