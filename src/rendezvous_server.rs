@@ -604,6 +604,9 @@ impl RendezvousServer {
         if let Some(old) = ip_change {
             log::info!("IP change of {} from {} to {}", id, old, socket_addr);
         }
+        if !request_pk {
+            allow_err!(self.pm.db.touch_peer(&id).await);
+        }
         let mut msg_out = RendezvousMessage::new();
         msg_out.set_register_peer_response(RegisterPeerResponse {
             request_pk,

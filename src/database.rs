@@ -77,6 +77,7 @@ impl Database {
                 uuid blob not null,
                 pk blob not null,
                 created_at datetime not null default(current_timestamp),
+                updated_at datetime not null default(current_timestamp),
                 user blob,
                 status tinyint,
                 note varchar(300),
@@ -90,6 +91,25 @@ impl Database {
         )
         .execute(self.pool.get().await?.deref_mut())
         .await?;
+
+        // Existing OSS databases do not have updated_at. SQLite cannot add this
+        // column with CURRENT_TIMESTAMP as a non-constant default, so add it
+        // nullable and backfill it for admin-panel heartbeat reads.
+        let mut conn = self.pool.get().await?;
+        let has_updated_at = sqlx::query("select updated_at from peer limit 1")
+            .fetch_optional(conn.deref_mut())
+            .await
+            .is_ok();
+        if !has_updated_at {
+            sqlx::query("alter table peer add column updated_at datetime")
+                .execute(conn.deref_mut())
+                .await
+                .ok();
+            sqlx::query("update peer set updated_at = coalesce(updated_at, created_at, current_timestamp)")
+                .execute(conn.deref_mut())
+                .await
+                .ok();
+        }
         Ok(())
     }
 
@@ -121,6 +141,7 @@ impl Database {
         )
         .execute(self.pool.get().await?.deref_mut())
         .await?;
+        self.touch_peer(id).await?;
         Ok(guid)
     }
 
@@ -140,6 +161,15 @@ impl Database {
         )
         .execute(self.pool.get().await?.deref_mut())
         .await?;
+        self.touch_peer(id).await?;
+        Ok(())
+    }
+
+    pub async fn touch_peer(&self, id: &str) -> ResultType<()> {
+        sqlx::query("update peer set updated_at = current_timestamp where id = ?")
+            .bind(id)
+            .execute(self.pool.get().await?.deref_mut())
+            .await?;
         Ok(())
     }
 }
