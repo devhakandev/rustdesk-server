@@ -1,8 +1,12 @@
 use async_trait::async_trait;
 use hbb_common::{log, ResultType};
 use sqlx::{
-    sqlite::SqliteConnectOptions, ConnectOptions, Connection, Error as SqlxError, SqliteConnection,
+    connection::{ConnectOptions, Connection},
+    error::Error as SqlxError,
+    query::query,
+    row::Row,
 };
+use sqlx_sqlite::{Sqlite, SqliteConnectOptions, SqliteConnection};
 use std::{ops::DerefMut, str::FromStr};
 //use sqlx::postgres::PgPoolOptions;
 //use sqlx::mysql::MySqlPoolOptions;
@@ -18,8 +22,9 @@ impl deadpool::managed::Manager for DbPool {
     type Type = SqliteConnection;
     type Error = SqlxError;
     async fn create(&self) -> Result<SqliteConnection, SqlxError> {
-        let mut opt = SqliteConnectOptions::from_str(&self.url).unwrap();
-        opt.log_statements(log::LevelFilter::Debug);
+        let opt = SqliteConnectOptions::from_str(&self.url)
+            .unwrap()
+            .log_statements(log::LevelFilter::Debug);
         SqliteConnection::connect_with(&opt).await
     }
     async fn recycle(
@@ -69,8 +74,9 @@ impl Database {
     }
 
     async fn create_tables(&self) -> ResultType<()> {
-        sqlx::query!(
-            "
+        let mut conn = self.pool.get().await?;
+        for statement in [
+            r#"
             create table if not exists peer (
                 guid blob primary key not null,
                 id varchar(100) not null,
@@ -83,44 +89,56 @@ impl Database {
                 note varchar(300),
                 info text not null
             ) without rowid;
-            create unique index if not exists index_peer_id on peer (id);
-            create index if not exists index_peer_user on peer (user);
-            create index if not exists index_peer_created_at on peer (created_at);
-            create index if not exists index_peer_status on peer (status);
-        "
-        )
-        .execute(self.pool.get().await?.deref_mut())
-        .await?;
+            "#,
+            "create unique index if not exists index_peer_id on peer (id);",
+            "create index if not exists index_peer_user on peer (user);",
+            "create index if not exists index_peer_created_at on peer (created_at);",
+            "create index if not exists index_peer_status on peer (status);",
+        ] {
+            query::<Sqlite>(statement).execute(conn.deref_mut()).await?;
+        }
 
         // Existing OSS databases do not have updated_at. SQLite cannot add this
         // column with CURRENT_TIMESTAMP as a non-constant default, so add it
         // nullable and backfill it for admin-panel heartbeat reads.
-        let mut conn = self.pool.get().await?;
-        let has_updated_at = sqlx::query("select updated_at from peer limit 1")
+        let has_updated_at = query::<Sqlite>("select updated_at from peer limit 1")
             .fetch_optional(conn.deref_mut())
             .await
             .is_ok();
         if !has_updated_at {
-            sqlx::query("alter table peer add column updated_at datetime")
+            query::<Sqlite>("alter table peer add column updated_at datetime")
                 .execute(conn.deref_mut())
                 .await
                 .ok();
-            sqlx::query("update peer set updated_at = coalesce(updated_at, created_at, current_timestamp)")
-                .execute(conn.deref_mut())
-                .await
-                .ok();
+            query::<Sqlite>(
+                "update peer set updated_at = coalesce(updated_at, created_at, current_timestamp)",
+            )
+            .execute(conn.deref_mut())
+            .await
+            .ok();
         }
         Ok(())
     }
 
     pub async fn get_peer(&self, id: &str) -> ResultType<Option<Peer>> {
-        Ok(sqlx::query_as!(
-            Peer,
-            "select guid, id, uuid, pk, user, status, info from peer where id = ?",
-            id
-        )
-        .fetch_optional(self.pool.get().await?.deref_mut())
-        .await?)
+        let row =
+            query::<Sqlite>("select guid, id, uuid, pk, user, status, info from peer where id = ?")
+                .bind(id)
+                .fetch_optional(self.pool.get().await?.deref_mut())
+                .await?;
+        if let Some(row) = row {
+            Ok(Some(Peer {
+                guid: row.try_get("guid")?,
+                id: row.try_get("id")?,
+                uuid: row.try_get("uuid")?,
+                pk: row.try_get("pk")?,
+                user: row.try_get("user")?,
+                status: row.try_get("status")?,
+                info: row.try_get("info")?,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn insert_peer(
@@ -131,16 +149,14 @@ impl Database {
         info: &str,
     ) -> ResultType<Vec<u8>> {
         let guid = uuid::Uuid::new_v4().as_bytes().to_vec();
-        sqlx::query!(
-            "insert into peer(guid, id, uuid, pk, info) values(?, ?, ?, ?, ?)",
-            guid,
-            id,
-            uuid,
-            pk,
-            info
-        )
-        .execute(self.pool.get().await?.deref_mut())
-        .await?;
+        query::<Sqlite>("insert into peer(guid, id, uuid, pk, info) values(?, ?, ?, ?, ?)")
+            .bind(&guid)
+            .bind(id)
+            .bind(uuid)
+            .bind(pk)
+            .bind(info)
+            .execute(self.pool.get().await?.deref_mut())
+            .await?;
         self.touch_peer(id).await?;
         Ok(guid)
     }
@@ -152,21 +168,19 @@ impl Database {
         pk: &[u8],
         info: &str,
     ) -> ResultType<()> {
-        sqlx::query!(
-            "update peer set id=?, pk=?, info=? where guid=?",
-            id,
-            pk,
-            info,
-            guid
-        )
-        .execute(self.pool.get().await?.deref_mut())
-        .await?;
+        query::<Sqlite>("update peer set id=?, pk=?, info=? where guid=?")
+            .bind(id)
+            .bind(pk)
+            .bind(info)
+            .bind(guid)
+            .execute(self.pool.get().await?.deref_mut())
+            .await?;
         self.touch_peer(id).await?;
         Ok(())
     }
 
     pub async fn touch_peer(&self, id: &str) -> ResultType<()> {
-        sqlx::query("update peer set updated_at = current_timestamp where id = ?")
+        query::<Sqlite>("update peer set updated_at = current_timestamp where id = ?")
             .bind(id)
             .execute(self.pool.get().await?.deref_mut())
             .await?;

@@ -1,6 +1,8 @@
 use clap::App;
 use hbb_common::{
-    allow_err, anyhow::{Context, Result}, get_version_number, log, tokio, ResultType
+    allow_err,
+    anyhow::{Context, Result},
+    get_version_number, log, tokio, ResultType,
 };
 use ini::Ini;
 use sodiumoxide::crypto::sign;
@@ -189,8 +191,12 @@ pub async fn listen_signal() -> Result<()> {
     unreachable!();
 }
 
-
 pub fn check_software_update() {
+    if std::env::var("SYRD_ENABLE_SIGNED_UPDATES").unwrap_or_default() != "1" {
+        log::info!("Software update checks are disabled by default in this fork.");
+        return;
+    }
+
     const ONE_DAY_IN_SECONDS: u64 = 60 * 60 * 24;
     std::thread::spawn(move || loop {
         std::thread::spawn(move || allow_err!(check_software_update_()));
@@ -200,8 +206,10 @@ pub fn check_software_update() {
 
 #[tokio::main(flavor = "current_thread")]
 async fn check_software_update_() -> hbb_common::ResultType<()> {
-    let (request, url) = hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_SERVER.to_string());
-    let latest_release_response = reqwest::Client::builder().build()?
+    let (request, url) =
+        hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_SERVER.to_string());
+    let latest_release_response = reqwest::Client::builder()
+        .build()?
         .post(url)
         .json(&request)
         .send()
@@ -212,7 +220,7 @@ async fn check_software_update_() -> hbb_common::ResultType<()> {
     let response_url = resp.url;
     let latest_release_version = response_url.rsplit('/').next().unwrap_or_default();
     if get_version_number(&latest_release_version) > get_version_number(crate::version::VERSION) {
-       log::info!("new version is available: {}", latest_release_version);
+        log::info!("new version is available: {}", latest_release_version);
     }
     Ok(())
 }
